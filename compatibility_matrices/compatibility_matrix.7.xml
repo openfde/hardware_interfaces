@@ -835,4 +835,12 @@
             <instance>default</instance>
         </interface>
     </hal>
+    <hal format="hidl">
+        <name>vendor.openfde.display</name>
+        <version>1.1</version>
+        <interface>
+            <name>IOpenfdeDisplay</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
 </compatibility-matrix>
