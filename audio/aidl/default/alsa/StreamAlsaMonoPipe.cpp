@@ -67,18 +67,18 @@ StreamAlsaMonoPipe::~StreamAlsaMonoPipe() {
 }
 
 ::android::status_t StreamAlsaMonoPipe::start() {
-    if (!mAlsaDeviceProxies.empty()) {
+    if (!mPulseDeviceProxies.empty()) {
         // This is a resume after a pause.
         return ::android::OK;
     }
-    decltype(mAlsaDeviceProxies) alsaDeviceProxies;
+    decltype(mPulseDeviceProxies) pulseDeviceProxies;
     decltype(mSources) sources;
     decltype(mSinks) sinks;
-    if (::android::status_t status = openDeviceProxies(&alsaDeviceProxies);
+    if (::android::status_t status = openDeviceProxies(&pulseDeviceProxies);
         status != ::android::OK) {
         return status;
     }
-    for (size_t i = 0; i < alsaDeviceProxies.size(); ++i) {
+    for (size_t i = 0; i < pulseDeviceProxies.size(); ++i) {
         auto sink = makeSink(mIsInput);  // Do not block the writer when it is on our thread.
         if (sink != nullptr) {
             sinks.push_back(sink);
@@ -91,11 +91,11 @@ StreamAlsaMonoPipe::~StreamAlsaMonoPipe() {
             return ::android::NO_INIT;
         }
     }
-    mAlsaDeviceProxies = std::move(alsaDeviceProxies);
+    mPulseDeviceProxies = std::move(pulseDeviceProxies);
     mSources = std::move(sources);
     mSinks = std::move(sinks);
     mIoThreadIsRunning = true;
-    for (size_t i = 0; i < mAlsaDeviceProxies.size(); ++i) {
+    for (size_t i = 0; i < mPulseDeviceProxies.size(); ++i) {
         mIoThreads.emplace_back(
                 mIsInput ? &StreamAlsaMonoPipe::inputIoThread : &StreamAlsaMonoPipe::outputIoThread,
                 this, i);
@@ -105,7 +105,7 @@ StreamAlsaMonoPipe::~StreamAlsaMonoPipe() {
 
 ::android::status_t StreamAlsaMonoPipe::transfer(void* buffer, size_t frameCount,
                                                  size_t* actualFrameCount, int32_t* latencyMs) {
-    if (mAlsaDeviceProxies.empty()) {
+    if (mPulseDeviceProxies.empty()) {
         LOG(FATAL) << __func__ << ": no opened devices";
         return ::android::NO_INIT;
     }
@@ -116,6 +116,13 @@ StreamAlsaMonoPipe::~StreamAlsaMonoPipe() {
         LOG(VERBOSE) << __func__ << ": reading from sink " << i;
         ssize_t framesRead = mSources[i]->read(buffer, frameCount);
         LOG_IF(FATAL, framesRead < 0) << "Error reading from the pipe: " << framesRead;
+        uint16_t tryCount = 10;//150ms
+        while (!(framesRead || tryCount == 0)) {
+            usleep(15000);
+            tryCount--;
+            framesRead = mSources[i]->read(buffer, frameCount);
+            LOG_IF(FATAL, framesRead < 0) << "Error reading from the pipe: " << framesRead;
+        }
         if (ssize_t framesMissing = static_cast<ssize_t>(frameCount) - framesRead;
             framesMissing > 0) {
             LOG(WARNING) << __func__ << ": incomplete data received, inserting " << framesMissing
@@ -123,19 +130,26 @@ StreamAlsaMonoPipe::~StreamAlsaMonoPipe() {
             memset(static_cast<char*>(buffer) + framesRead * mFrameSizeBytes, 0,
                    framesMissing * mFrameSizeBytes);
         }
-        maxLatency = proxy_get_latency(mAlsaDeviceProxies[i].get());
+        maxLatency = proxy_get_latency(mPulseDeviceProxies[i].get());
     } else {
         alsa::applyGain(buffer, mGain, bytesToTransfer, mConfig.value().format, mConfig->channels);
-        for (size_t i = 0; i < mAlsaDeviceProxies.size(); ++i) {
+        for (size_t i = 0; i < mPulseDeviceProxies.size(); ++i) {
             LOG(VERBOSE) << __func__ << ": writing into sink " << i;
             ssize_t framesWritten = mSinks[i]->write(buffer, frameCount);
             LOG_IF(FATAL, framesWritten < 0) << "Error writing into the pipe: " << framesWritten;
+            uint16_t tryCount = 10;//150ms
+            while (!(framesWritten || tryCount == 0)) {
+                usleep(15000);
+                tryCount--;
+                framesWritten = mSinks[i]->write(buffer, frameCount);
+                LOG_IF(FATAL, framesWritten < 0) << "Error writing into the pipe: " << framesWritten;
+            }
             if (ssize_t framesLost = static_cast<ssize_t>(frameCount) - framesWritten;
                 framesLost > 0) {
                 LOG(WARNING) << __func__ << ": sink " << i << " incomplete data sent, dropping "
                              << framesLost << " frames";
             }
-            maxLatency = std::max(maxLatency, proxy_get_latency(mAlsaDeviceProxies[i].get()));
+            maxLatency = std::max(maxLatency, proxy_get_latency(mPulseDeviceProxies[i].get()));
         }
     }
     *actualFrameCount = frameCount;
@@ -157,9 +171,12 @@ void StreamAlsaMonoPipe::inputIoThread(size_t idx) {
     const size_t bufferSize = mBufferSizeFrames * mFrameSizeBytes;
     std::vector<char> buffer(bufferSize);
     while (mIoThreadIsRunning) {
-        if (int ret = proxy_read_with_retries(mAlsaDeviceProxies[idx].get(), &buffer[0], bufferSize,
-                                              mReadWriteRetries);
-            ret == 0) {
+        int ret = snd_pcm_readi(mPulseDeviceProxies[idx].getPulseProxy()->pcm, &buffer[0], mBufferSizeFrames);
+        if (ret == -EPIPE) {
+            snd_pcm_prepare(mPulseDeviceProxies[idx].getPulseProxy()->pcm);
+            ret = snd_pcm_readi(mPulseDeviceProxies[idx].getPulseProxy()->pcm, &buffer[0], mBufferSizeFrames);
+        }
+        if (ret > 0) {
             size_t bufferFramesWritten = 0;
             while (bufferFramesWritten < mBufferSizeFrames) {
                 if (!mIoThreadIsRunning) return;
@@ -192,11 +209,13 @@ void StreamAlsaMonoPipe::outputIoThread(size_t idx) {
     while (mIoThreadIsRunning) {
         ssize_t framesReadOrError = mSources[idx]->read(&buffer[0], mBufferSizeFrames);
         if (framesReadOrError > 0) {
-            int ret = proxy_write_with_retries(mAlsaDeviceProxies[idx].get(), &buffer[0],
-                                               framesReadOrError * mFrameSizeBytes,
-                                               mReadWriteRetries);
+            int ret = snd_pcm_writei(mPulseDeviceProxies[idx].getPulseProxy()->pcm, &buffer[0], mBufferSizeFrames);
+            if (ret == -EPIPE) {
+                snd_pcm_prepare(mPulseDeviceProxies[idx].getPulseProxy()->pcm);
+                ret = snd_pcm_writei(mPulseDeviceProxies[idx].getPulseProxy()->pcm, &buffer[0], mBufferSizeFrames);
+            }
             // Errors when the stream is being stopped are expected.
-            LOG_IF(WARNING, ret != 0 && mIoThreadIsRunning)
+            LOG_IF(WARNING, ret < 0 && mIoThreadIsRunning)
                     << __func__ << "[" << idx << "]: Error writing into ALSA: " << ret;
         } else if (framesReadOrError == 0) {
             // MonoPipeReader does not have a blocking read, while use of std::condition_variable
@@ -219,8 +238,9 @@ void StreamAlsaMonoPipe::teardownIo() {
         }
     }
     LOG(DEBUG) << __func__ << ": stopping PCM streams";
-    for (const auto& proxy : mAlsaDeviceProxies) {
-        proxy_stop(proxy.get());
+    for (const auto& proxy : mPulseDeviceProxies) {
+        snd_pcm_close(proxy.getPulseProxy()->pcm);
+        proxy.getPulseProxy()->pcm = nullptr;
     }
     LOG(DEBUG) << __func__ << ": joining threads";
     for (auto& thread : mIoThreads) {
@@ -228,7 +248,7 @@ void StreamAlsaMonoPipe::teardownIo() {
     }
     mIoThreads.clear();
     LOG(DEBUG) << __func__ << ": closing PCM devices";
-    mAlsaDeviceProxies.clear();
+    mPulseDeviceProxies.clear();
     mSources.clear();
     mSinks.clear();
 }

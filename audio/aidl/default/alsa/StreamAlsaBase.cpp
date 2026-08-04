@@ -133,4 +133,23 @@ ndk::ScopedAStatus StreamAlsaBase::setGain(float gain) {
     return ::android::OK;
 }
 
+::android::status_t StreamAlsaBase::openDeviceProxies(std::vector<alsa::PulseDeviceProxy>* proxies) {
+    for (const auto& device : getDeviceProfiles()) {
+        if ((device.direction == PCM_OUT && mIsInput) ||
+            (device.direction == PCM_IN && !mIsInput)) {
+            continue;
+        }
+        alsa::PulseDeviceProxy proxy;
+        proxy = alsa::openProxyForAttachedDevice(device, const_cast<struct pcm_config*>(&mConfig.value()), mBufferSizeFrames);
+        if (proxy.getPulseProxy() == nullptr) {
+            return ::android::NO_INIT;
+        }
+        proxies->push_back(std::move(proxy));
+    }
+    if (proxies->empty()) {
+        return ::android::NO_INIT;
+    }
+    return ::android::OK;
+}
+
 }  // namespace aidl::android::hardware::audio::core

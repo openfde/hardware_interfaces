@@ -55,7 +55,8 @@ class StreamAlsaBase : public StreamCommonImpl {
 
     // Helper used by subclass start() implementations to open ALSA device proxies.
     // Returns ::android::NO_INIT if no proxies could be opened, ::android::OK otherwise.
-    ::android::status_t openDeviceProxies(std::vector<alsa::DeviceProxy>* proxies);
+    ::android::status_t openDeviceProxies(std::vector<alsa::DeviceProxy >* proxies);
+    ::android::status_t openDeviceProxies(std::vector<alsa::PulseDeviceProxy >* proxies);
 
     const size_t mBufferSizeFrames;
     const size_t mFrameSizeBytes;
@@ -68,6 +69,7 @@ class StreamAlsaBase : public StreamCommonImpl {
 
     // Opened ALSA device proxies. Populated by start(), cleared by standby()/shutdown().
     std::vector<alsa::DeviceProxy> mAlsaDeviceProxies;
+    std::vector<alsa::PulseDeviceProxy> mPulseDeviceProxies;
 };
 
 }  // namespace aidl::android::hardware::audio::core
