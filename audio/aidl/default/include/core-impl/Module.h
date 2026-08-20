@@ -146,6 +146,11 @@ class Module : public BnModule {
             const ::aidl::android::media::audio::common::AudioPortConfig& in_config,
             ::aidl::android::media::audio::common::FlushFromFrameSupport* _aidl_return) override;
 
+    ndk::ScopedAStatus getDevs(bool input, std::string* result) override;
+    ndk::ScopedAStatus setDevVolume(bool input, const std::string& devName, float volume) override;
+    ndk::ScopedAStatus setDevMute(bool input, const std::string& devName, bool mute) override;
+    ndk::ScopedAStatus setDefaultDev(bool input, const std::string& devName, bool needInfo, std::string* result) override;
+
     // The maximum stream buffer size is 1 GiB = 2 ** 30 bytes;
     static constexpr int32_t kMaximumStreamBufferSizeBytes = 1 << 30;
 

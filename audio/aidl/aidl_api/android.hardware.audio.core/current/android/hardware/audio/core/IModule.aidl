@@ -117,4 +117,8 @@ interface IModule {
     DEG_180 = 2,
     DEG_270 = 3,
   }
+  @utf8InCpp String getDevs(boolean input);
+  void setDevVolume(boolean input, in @utf8InCpp String devName, float volume);
+  void setDevMute(boolean input, in @utf8InCpp String devName, boolean mute);
+  @utf8InCpp String setDefaultDev(boolean input, in @utf8InCpp String devName, boolean needInfo);
 }

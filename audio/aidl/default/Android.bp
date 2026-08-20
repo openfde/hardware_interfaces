@@ -90,6 +90,7 @@ cc_library {
         "usb/ModuleUsb.cpp",
         "usb/StreamUsb.cpp",
         "usb/UsbAlsaMixerControl.cpp",
+        "pactl/PaVolumeCtl.c",
     ],
     generated_sources: [
         "audio_policy_capengine_configuration_aidl_default",
@@ -126,6 +127,9 @@ cc_library {
         "-Werror",
         "-Wthread-safety",
         "-DBACKEND_NDK",
+        "-DPACKAGE",
+        "-DPACKAGE_NAME=\"pulseaudio\"",
+        "-DPACKAGE_VERSION=\"1.99\"",
     ] + select(release_flag("RELEASE_HARDWARE_AUDIO_USE_CAP_AIDL"), {
         true: [],
         default: ["-DDISABLE_CAP_AIDL"],
@@ -134,6 +138,7 @@ cc_library {
         "external/expat/lib",
         "system/media/audio_utils/include",
         "system/media/audio_effects/include",
+        "external/pulseaudio/src"
     ],
 }
 
@@ -207,6 +212,7 @@ cc_binary {
         "libasound_module_pcm_pulse",
         "libasound_module_ctl_pulse",
         "libasound_module_conf_pulse",
+        "libpulse",
     ],
     srcs: ["main.cpp"],
     cflags: [
