@@ -237,11 +237,6 @@ void StreamAlsaMonoPipe::teardownIo() {
             sink->shutdown(true);
         }
     }
-    LOG(DEBUG) << __func__ << ": stopping PCM streams";
-    for (const auto& proxy : mPulseDeviceProxies) {
-        snd_pcm_close(proxy.getPulseProxy()->pcm);
-        proxy.getPulseProxy()->pcm = nullptr;
-    }
     LOG(DEBUG) << __func__ << ": joining threads";
     for (auto& thread : mIoThreads) {
         if (thread.joinable()) thread.join();
