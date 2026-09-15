@@ -34,6 +34,7 @@
 #include <aidl/android/hardware/graphics/common/Dataspace.h>
 #include <aidlcommonsupport/NativeHandle.h>
 #include <convert.h>
+#include <cutils/properties.h>
 #include <linux/videodev2.h>
 #include <sync/sync.h>
 #include <utils/Trace.h>
@@ -42,6 +43,8 @@
 #define HAVE_JPEG  // required for libyuv.h to export MJPEG decode APIs
 #include <libyuv.h>
 #include <libyuv/convert.h>
+#include <sys/time.h>
+#include <signal.h>
 
 namespace android {
 namespace hardware {
@@ -89,6 +92,10 @@ bool tryLock(std::mutex& mutex) {
     return locked;
 }
 
+static void timerHandler(int sig) {
+    (void)sig;
+}
+
 }  // anonymous namespace
 
 using ::aidl::android::hardware::camera::device::BufferRequestStatus;
@@ -131,7 +138,7 @@ Size ExternalCameraDeviceSession::getMaxThumbResolution() const {
 
 Size ExternalCameraDeviceSession::getMaxJpegResolution() const {
     Size ret{0, 0};
-    for (auto& fmt : mSupportedFormats) {
+    for (auto & fmt : mSupportedFormats) {
         if (fmt.width * fmt.height > ret.width * ret.height) {
             ret = Size{fmt.width, fmt.height};
         }
@@ -1247,10 +1254,22 @@ std::unique_ptr<V4L2Frame> ExternalCameraDeviceSession::dequeueV4l2FrameLocked(n
         ATRACE_BEGIN("VIDIOC_DQBUF");
         buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buffer.memory = V4L2_MEMORY_MMAP;
+        struct itimerval timer;
+        timer.it_value.tv_sec = 1;
+        timer.it_value.tv_usec = 0;
+        timer.it_interval.tv_sec = 0;
+        timer.it_interval.tv_usec = 0;
+
+        signal(SIGALRM, timerHandler);
+        setitimer(ITIMER_REAL, &timer, nullptr);
         if (TEMP_FAILURE_RETRY(ioctl(mV4l2Fd.get(), VIDIOC_DQBUF, &buffer)) < 0) {
+            timer.it_value.tv_sec = 0;
+            setitimer(ITIMER_REAL, &timer, nullptr);
             ALOGE("%s: DQBUF fails: %s", __FUNCTION__, strerror(errno));
             return ret;
         }
+        timer.it_value.tv_sec = 0;
+        setitimer(ITIMER_REAL, &timer, nullptr);
         ATRACE_END();
 
         if (buffer.index >= mV4L2BufferCount) {
@@ -2778,7 +2797,9 @@ bool ExternalCameraDeviceSession::OutputThread::threadLoop() {
         return false;
     };
 
-    if (req->frameIn->mFourcc != V4L2_PIX_FMT_MJPEG && req->frameIn->mFourcc != V4L2_PIX_FMT_Z16) {
+    if (req->frameIn->mFourcc != V4L2_PIX_FMT_MJPEG
+        && req->frameIn->mFourcc != V4L2_PIX_FMT_Z16
+        && req->frameIn->mFourcc != V4L2_PIX_FMT_YUYV) {
         return onDeviceError("%s: do not support V4L2 format %c%c%c%c", __FUNCTION__,
                              req->frameIn->mFourcc & 0xFF, (req->frameIn->mFourcc >> 8) & 0xFF,
                              (req->frameIn->mFourcc >> 16) & 0xFF,
@@ -2825,26 +2846,61 @@ bool ExternalCameraDeviceSession::OutputThread::threadLoop() {
         }
     }
 
+    std::shared_ptr<AllocatedFrame> tmpFrame;
     // TODO: in some special case maybe we can decode jpg directly to gralloc output?
-    if (req->frameIn->mFourcc == V4L2_PIX_FMT_MJPEG) {
+    if (req->frameIn->mFourcc == V4L2_PIX_FMT_MJPEG || req->frameIn->mFourcc == V4L2_PIX_FMT_YUYV) {
         ATRACE_BEGIN("MJPGtoI420");
         res = 0;
+        int8_t mirror = property_get_bool("persist.fde.mirror", false);//base to d3000m camera
+        YCbCrLayout tmpFrameLayout;
+        YCbCrLayout& realFrameLayout = mirror ? tmpFrameLayout : mYu12FrameLayout;
+        if (mirror) {
+            tmpFrame = std::make_shared<AllocatedFrame>(mYu12Frame->mWidth, mYu12Frame->mHeight);
+            int ret = tmpFrame->allocate(&realFrameLayout);
+            if (ret != 0) {
+                ALOGE("%s: allocating YU12 frame failed!", __FUNCTION__);
+                return false;
+            }
+        }
         if (mCameraMuted) {
             res = libyuv::ConvertToI420(
                     mMuteTestPatternFrame.data(), mMuteTestPatternFrame.size(),
-                    static_cast<uint8_t*>(mYu12FrameLayout.y), mYu12FrameLayout.yStride,
-                    static_cast<uint8_t*>(mYu12FrameLayout.cb), mYu12FrameLayout.cStride,
-                    static_cast<uint8_t*>(mYu12FrameLayout.cr), mYu12FrameLayout.cStride, 0, 0,
+                    static_cast<uint8_t*>(realFrameLayout.y), realFrameLayout.yStride,
+                    static_cast<uint8_t*>(realFrameLayout.cb), realFrameLayout.cStride,
+                    static_cast<uint8_t*>(realFrameLayout.cr), realFrameLayout.cStride, 0, 0,
                     mYu12Frame->mWidth, mYu12Frame->mHeight, mYu12Frame->mWidth,
                     mYu12Frame->mHeight, libyuv::kRotate0, libyuv::FOURCC_RAW);
         } else {
-            res = libyuv::MJPGToI420(
-                    inData, inDataSize, static_cast<uint8_t*>(mYu12FrameLayout.y),
-                    mYu12FrameLayout.yStride, static_cast<uint8_t*>(mYu12FrameLayout.cb),
-                    mYu12FrameLayout.cStride, static_cast<uint8_t*>(mYu12FrameLayout.cr),
-                    mYu12FrameLayout.cStride, mYu12Frame->mWidth, mYu12Frame->mHeight,
+            if (req->frameIn->mFourcc == V4L2_PIX_FMT_MJPEG) {
+                res = libyuv::MJPGToI420(
+                    inData, inDataSize, static_cast<uint8_t*>(realFrameLayout.y),
+                    realFrameLayout.yStride, static_cast<uint8_t*>(realFrameLayout.cb),
+                    realFrameLayout.cStride, static_cast<uint8_t*>(realFrameLayout.cr),
+                    realFrameLayout.cStride, mYu12Frame->mWidth, mYu12Frame->mHeight,
                     mYu12Frame->mWidth, mYu12Frame->mHeight);
+            } else {
+                res = libyuv::ConvertToI420(
+                    inData, inDataSize, static_cast<uint8_t*>(realFrameLayout.y),
+                    realFrameLayout.yStride, static_cast<uint8_t*>(realFrameLayout.cb),
+                    realFrameLayout.cStride, static_cast<uint8_t*>(realFrameLayout.cr),
+                    realFrameLayout.cStride, 0, 0, mYu12Frame->mWidth, mYu12Frame->mHeight,
+                    mYu12Frame->mWidth, mYu12Frame->mHeight, libyuv::kRotate0, V4L2_PIX_FMT_YUYV);
+            }
         }
+
+        if (mirror && (res == 0)) {
+            res = libyuv::I420Mirror(static_cast<uint8_t*>(realFrameLayout.y), realFrameLayout.yStride,
+                static_cast<uint8_t*>(realFrameLayout.cb), realFrameLayout.cStride,
+                static_cast<uint8_t*>(realFrameLayout.cr), realFrameLayout.cStride,
+                static_cast<uint8_t*>(mYu12FrameLayout.y), realFrameLayout.yStride,
+                static_cast<uint8_t*>(mYu12FrameLayout.cb), realFrameLayout.cStride,
+                static_cast<uint8_t*>(mYu12FrameLayout.cr), realFrameLayout.cStride,
+                mYu12Frame->mWidth, mYu12Frame->mHeight);
+        }
+        if (mirror) {
+            tmpFrame.reset();
+        }
+
         ATRACE_END();
 
         if (res != 0) {

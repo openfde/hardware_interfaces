@@ -72,6 +72,7 @@ class ExternalCameraProvider : public BnCameraProvider {
     void deviceAdded(const char* devName);
     void deviceRemoved(const char* devName);
     void updateAttachedCameras();
+    int getCameraId();
 
     // A separate thread to monitor '/dev' directory for '/dev/video*' entries
     // This thread calls back into ExternalCameraProvider when an actionable change is detected.
@@ -103,7 +104,7 @@ class ExternalCameraProvider : public BnCameraProvider {
 
     Mutex mLock;
     std::shared_ptr<ICameraProviderCallback> mCallback = nullptr;
-    std::unordered_map<std::string, CameraDeviceStatus> mCameraStatusMap;  // camera id -> status
+    std::unordered_map<std::string, std::pair<std::string, CameraDeviceStatus>> mCameraStatusMap;  // camera id -> status
     const ExternalCameraConfig mCfg;
     std::shared_ptr<HotplugThread> mHotPlugThread;
 };
