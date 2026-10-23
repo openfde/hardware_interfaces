@@ -2274,7 +2274,8 @@ void HWC2On1Adapter::populateCapabilities() {
     mCapabilities.insert(Capability::PresentFenceIsNotReliable);
 }
 
-HWC2On1Adapter::Display* HWC2On1Adapter::getDisplay(hwc2_display_t id) {
+std::shared_ptr<HWC2On1Adapter::Display> HWC2On1Adapter::getDisplay(
+        hwc2_display_t id) {
     std::unique_lock<std::recursive_timed_mutex> lock(mStateMutex);
 
     auto display = mDisplays.find(id);
@@ -2282,26 +2283,31 @@ HWC2On1Adapter::Display* HWC2On1Adapter::getDisplay(hwc2_display_t id) {
         return nullptr;
     }
 
-    return display->second.get();
+    // Return the shared_ptr by value: the caller keeps the Display alive even
+    // if hwc1Hotplug erases this entry from mDisplays right after we release
+    // mStateMutex, so the subsequent member call cannot hit a freed object.
+    return display->second;
 }
 
-std::tuple<HWC2On1Adapter::Layer*, Error> HWC2On1Adapter::getLayer(
+std::tuple<std::shared_ptr<HWC2On1Adapter::Layer>, Error> HWC2On1Adapter::getLayer(
         hwc2_display_t displayId, hwc2_layer_t layerId) {
     auto display = getDisplay(displayId);
     if (!display) {
-        return std::make_tuple(static_cast<Layer*>(nullptr), Error::BadDisplay);
+        return std::make_tuple(std::shared_ptr<Layer>{}, Error::BadDisplay);
     }
 
     auto layerEntry = mLayers.find(layerId);
     if (layerEntry == mLayers.end()) {
-        return std::make_tuple(static_cast<Layer*>(nullptr), Error::BadLayer);
+        return std::make_tuple(std::shared_ptr<Layer>{}, Error::BadLayer);
     }
 
     auto layer = layerEntry->second;
     if (layer->getDisplay().getId() != displayId) {
-        return std::make_tuple(static_cast<Layer*>(nullptr), Error::BadLayer);
+        return std::make_tuple(std::shared_ptr<Layer>{}, Error::BadLayer);
     }
-    return std::make_tuple(layer.get(), Error::None);
+    // Return the shared_ptr by value so the caller keeps the Layer alive even
+    // if it is erased from mLayers right after we release mStateMutex.
+    return std::make_tuple(layer, Error::None);
 }
 
 void HWC2On1Adapter::populatePrimary() {

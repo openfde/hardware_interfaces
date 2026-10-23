@@ -622,7 +622,7 @@ private:
         auto result = getAdapter(device)->getLayer(displayId, layerId);
         auto error = std::get<HWC2::Error>(result);
         if (error == HWC2::Error::None) {
-            auto layer = std::get<Layer*>(result);
+            auto layer = std::get<std::shared_ptr<Layer>>(result);
             error = ((*layer).*member)(std::forward<Args>(args)...);
         }
         return static_cast<int32_t>(error);
@@ -674,9 +674,15 @@ private:
     // Adapter internals
 
     void populateCapabilities();
-    Display* getDisplay(hwc2_display_t id);
-    std::tuple<Layer*, HWC2::Error> getLayer(hwc2_display_t displayId,
-            hwc2_layer_t layerId);
+    // Returns a shared_ptr so the caller keeps the Display alive even after it
+    // has been removed from mDisplays (e.g. on hotplug disconnect), preventing
+    // use-after-free of the Display (and its mutex) by displayHook callers.
+    std::shared_ptr<Display> getDisplay(hwc2_display_t id);
+    // Returns a shared_ptr<Layer> so the caller keeps the Layer alive even
+    // after it has been removed from mLayers (e.g. on layer/hotplug removal),
+    // preventing use-after-free of the Layer by callLayerFunction callers.
+    std::tuple<std::shared_ptr<Layer>, HWC2::Error> getLayer(
+            hwc2_display_t displayId, hwc2_layer_t layerId);
     void populatePrimary();
 
     bool prepareAllDisplays();
