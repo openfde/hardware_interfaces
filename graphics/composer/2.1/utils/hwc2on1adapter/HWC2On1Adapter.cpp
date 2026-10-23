@@ -2398,7 +2398,11 @@ bool HWC2On1Adapter::prepareAllDisplays() {
         }
 
         auto displayId = mHwc1DisplayMap[hwc1Id];
-        auto& display = mDisplays[displayId];
+        auto it = mDisplays.find(displayId);
+        if (it == mDisplays.end() || !it->second) {
+            continue;
+        }
+        auto& display = it->second;
         display->generateChanges();
     }
 
@@ -2494,7 +2498,12 @@ Error HWC2On1Adapter::setAllDisplays() {
         }
 
         auto displayId = mHwc1DisplayMap[hwc1Id];
-        auto& display = mDisplays[displayId];
+        auto it = mDisplays.find(displayId);
+        if (it == mDisplays.end() || !it->second) {
+            ALOGW("setAllDisplays: display %" PRIu64 " gone, skipping", displayId);
+            continue;
+        }
+        auto& display = it->second;
         Error error = display->set(*mHwc1Contents[hwc1Id]);
         if (error != Error::None) {
             ALOGE("setAllDisplays: Failed to set display %zd: %s", hwc1Id,
@@ -2518,7 +2527,11 @@ Error HWC2On1Adapter::setAllDisplays() {
         }
 
         auto displayId = mHwc1DisplayMap[hwc1Id];
-        auto& display = mDisplays[displayId];
+        auto it = mDisplays.find(displayId);
+        if (it == mDisplays.end() || !it->second) {
+            continue;
+        }
+        auto& display = it->second;
         auto retireFenceFd = mHwc1Contents[hwc1Id]->retireFenceFd;
         ALOGV("setAllDisplays: Adding retire fence %d to display %zd",
                 retireFenceFd, hwc1Id);
@@ -2619,6 +2632,12 @@ void HWC2On1Adapter::hwc1Hotplug(int hwc1DisplayId, int connected) {
         displayId = mHwc1DisplayMap[hwc1DisplayId];
         mHwc1DisplayMap.erase(HWC_DISPLAY_EXTERNAL);
         mDisplays.erase(displayId);
+        // Drop the stale HWC1 contents for this display so setAllDisplays/prepared
+        // skip it via their nullptr check, instead of dereferencing a removed
+        // Display* (which would segfault the composer process).
+        if (hwc1DisplayId < mHwc1Contents.size()) {
+            mHwc1Contents[hwc1DisplayId] = nullptr;
+        }
     }
 
     // If the HWC2-side callback hasn't been registered yet, buffer this until
