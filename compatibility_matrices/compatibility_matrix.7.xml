@@ -843,4 +843,12 @@
             <instance>default</instance>
         </interface>
     </hal>
+    <hal format="hidl">
+        <name>vendor.openfde.window</name>
+        <version>1.2</version>
+        <interface>
+            <name>IOpenfdeWindow</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
 </compatibility-matrix>
